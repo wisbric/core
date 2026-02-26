@@ -14,6 +14,7 @@ type OIDCClaims struct {
 	Email      string `json:"email"`
 	TenantSlug string `json:"tenant_slug"`
 	Role       string `json:"role"`
+	OrgID      string `json:"org_id"`
 }
 
 // OIDCAuthenticator validates OIDC JWTs and extracts claims.
