@@ -11,7 +11,7 @@ import (
 
 func TestMiddleware_NoAuth(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mw := Middleware(nil, nil, nil, nil, logger)
+	mw := Middleware(nil, nil, nil, nil, logger, false)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -37,7 +37,7 @@ func TestMiddleware_NoAuth(t *testing.T) {
 func TestMiddleware_DevHeader(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// nil OIDC and nil DB — dev header fallback should still work.
-	mw := Middleware(nil, nil, nil, nil, logger)
+	mw := Middleware(nil, nil, nil, nil, logger, true)
 
 	var gotIdentity *Identity
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +70,7 @@ func TestMiddleware_DevHeader(t *testing.T) {
 
 func TestMiddleware_JWTWithoutOIDC(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mw := Middleware(nil, nil, nil, nil, logger)
+	mw := Middleware(nil, nil, nil, nil, logger, false)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,5 +83,23 @@ func TestMiddleware_JWTWithoutOIDC(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestMiddleware_DevHeader_Disabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mw := Middleware(nil, nil, nil, nil, logger, false)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Tenant-Slug", "acme")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
 }
