@@ -8,7 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	"strings"
+
+	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 )
 
 // validate is a package-level, concurrency-safe validator instance.
@@ -157,4 +161,14 @@ func toSnakeCase(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// URLParamUUID extracts a URL parameter and parses it as a UUID.
+// It returns an error if the parameter is missing or invalid.
+func URLParamUUID(r *http.Request, key string) (uuid.UUID, error) {
+	val := chi.URLParam(r, key)
+	if val == "" {
+		return uuid.Nil, fmt.Errorf("missing parameter %s", key)
+	}
+	return uuid.Parse(val)
 }
