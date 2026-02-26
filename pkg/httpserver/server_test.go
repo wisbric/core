@@ -8,18 +8,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/wisbric/core/pkg/config"
 	"github.com/wisbric/core/pkg/httpserver"
 	"github.com/wisbric/core/pkg/telemetry"
 )
 
 func TestHealthz_Always200(t *testing.T) {
-	cfg := &config.Config{
+	cfg := httpserver.ServerConfig{
 		CORSAllowedOrigins: []string{"*"},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := telemetry.NewMetricsRegistry()
-	srv := httpserver.NewServer(cfg, logger, nil, nil, reg, nil)
+	srv := httpserver.NewServer(cfg, logger, nil, nil, reg, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()

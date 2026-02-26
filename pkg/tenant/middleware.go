@@ -1,11 +1,13 @@
 package tenant
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,12 +16,42 @@ type Resolver interface {
 	Resolve(r *http.Request) (slug string, err error)
 }
 
+// TenantLookup retrieves tenant metadata by slug. Services can provide
+// their own implementation (e.g. using sqlc) to avoid raw SQL in core.
+type TenantLookup interface {
+	LookupBySlug(ctx context.Context, slug string) (id uuid.UUID, name string, err error)
+}
+
+// DefaultLookup provides a raw-SQL TenantLookup using a pgxpool.Pool.
+type DefaultLookup struct {
+	Pool *pgxpool.Pool
+}
+
+func (d *DefaultLookup) LookupBySlug(ctx context.Context, slug string) (uuid.UUID, string, error) {
+	var tenantID uuid.UUID
+	var tenantName string
+	err := d.Pool.QueryRow(ctx,
+		"SELECT id, name FROM public.tenants WHERE slug = $1",
+		slug,
+	).Scan(&tenantID, &tenantName)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return tenantID, tenantName, nil
+}
+
 // Middleware returns an HTTP middleware that resolves the tenant, acquires a
 // database connection, sets the PostgreSQL search_path, and stores both the
 // tenant info and the scoped connection in the request context.
 //
 // The connection is released after the downstream handler returns.
 func Middleware(pool *pgxpool.Pool, resolver Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+	return MiddlewareWithLookup(pool, &DefaultLookup{Pool: pool}, resolver, logger)
+}
+
+// MiddlewareWithLookup is like Middleware but accepts a custom TenantLookup
+// for services that want to use sqlc or other typed queries.
+func MiddlewareWithLookup(pool *pgxpool.Pool, lookup TenantLookup, resolver Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			slug, err := resolver.Resolve(r)
@@ -28,13 +60,8 @@ func Middleware(pool *pgxpool.Pool, resolver Resolver, logger *slog.Logger) func
 				return
 			}
 
-			// Look up tenant in the global registry.
-			var tenantID [16]byte
-			var tenantName string
-			err = pool.QueryRow(r.Context(),
-				"SELECT id, name FROM global.tenants WHERE slug = $1 AND NOT suspended",
-				slug,
-			).Scan(&tenantID, &tenantName)
+			// Look up tenant.
+			tenantID, tenantName, err := lookup.LookupBySlug(r.Context(), slug)
 			if err != nil {
 				logger.Warn("tenant not found", "slug", slug, "error", err)
 				respondError(w, http.StatusUnauthorized, "unauthorized", "unknown tenant")

@@ -16,10 +16,16 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/wisbric/core/pkg/auth"
-	"github.com/wisbric/core/pkg/config"
 	"github.com/wisbric/core/pkg/tenant"
 	"github.com/wisbric/core/pkg/version"
 )
+
+// ServerConfig holds the parameters NewServer needs, decoupled from any
+// service-specific configuration struct.
+type ServerConfig struct {
+	CORSAllowedOrigins []string
+	ZammadURL          string // optional, for readyz
+}
 
 // Server holds the HTTP server dependencies.
 type Server struct {
@@ -36,7 +42,7 @@ type Server struct {
 // NewServer creates an HTTP server with middleware and health/metrics endpoints.
 // oidcAuth may be nil when OIDC is not configured.
 // Domain handlers should be mounted on APIRouter after calling NewServer.
-func NewServer(cfg *config.Config, logger *slog.Logger, db *pgxpool.Pool, rdb *redis.Client, metricsReg *prometheus.Registry, sessionMgr *auth.SessionManager, oidcAuth *auth.OIDCAuthenticator, patAuth *auth.PATAuthenticator, authStore auth.Storage) *Server {
+func NewServer(cfg ServerConfig, logger *slog.Logger, db *pgxpool.Pool, rdb *redis.Client, metricsReg *prometheus.Registry, sessionMgr *auth.SessionManager, oidcAuth *auth.OIDCAuthenticator, patAuth *auth.PATAuthenticator, authStore auth.Storage) *Server {
 	s := &Server{
 		Router:    chi.NewRouter(),
 		Logger:    logger,

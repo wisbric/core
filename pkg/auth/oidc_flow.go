@@ -123,7 +123,7 @@ func (h *OIDCFlowHandler) HandleCallback(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Issue session JWT.
-	token, err := h.sessionMgr.IssueToken(SessionClaims{
+	sessClaims := SessionClaims{
 		Subject:    claims.Subject,
 		Email:      claims.Email,
 		Role:       claims.Role,
@@ -131,14 +131,19 @@ func (h *OIDCFlowHandler) HandleCallback(w http.ResponseWriter, r *http.Request)
 		TenantID:   tenantID,
 		UserID:     userRow.ID.String(),
 		Method:     "oidc",
-	})
+	}
+
+	token, err := h.sessionMgr.IssueToken(sessClaims)
 	if err != nil {
 		h.logger.Error("oidc: issuing session token", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to issue token")
 		return
 	}
 
-	// Redirect to frontend with token.
+	// Set session cookie (browser clients).
+	_ = h.sessionMgr.IssueCookie(w, sessClaims)
+
+	// Redirect to frontend with token (backward compat during transition).
 	redirectURL := fmt.Sprintf("%s?token=%s", h.oauth2Cfg.RedirectURL, token)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }

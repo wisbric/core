@@ -14,11 +14,12 @@ import (
 const MethodSession = "session"
 
 // Middleware returns an HTTP middleware that authenticates the caller via
-// session JWT, OIDC JWT, API key, or dev header and stores the resulting
-// Identity in the request context.
+// session cookie, session JWT, OIDC JWT, API key, or dev header and stores
+// the resulting Identity in the request context.
 //
 // Authentication precedence:
-//  1. Authorization: Bearer <jwt>  →  Session JWT (HMAC) → OIDC validation
+//  0. wisbric_session cookie       →  Session JWT from cookie (with silent refresh)
+//  1. Authorization: Bearer <jwt>  →  PAT → Session JWT (HMAC) → OIDC validation
 //  2. X-API-Key: <raw-key>        →  API key hash lookup
 //  3. X-Tenant-Slug: <slug>       →  Development-only fallback (no real auth)
 //
@@ -29,6 +30,43 @@ func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var identity *Identity
+
+			// 0. Try session cookie (wisbric_session) with silent refresh.
+			if sessionMgr != nil {
+				if cookie, err := r.Cookie(CookieName); err == nil {
+					claims, err := sessionMgr.ValidateToken(cookie.Value)
+					if err == nil {
+						// Silent refresh: re-issue cookie if near expiry.
+						if sessionMgr.ShouldRefreshToken(cookie.Value) {
+							_ = sessionMgr.IssueCookie(w, *claims)
+						}
+
+						userID, _ := uuid.Parse(claims.UserID)
+						tenantID, _ := uuid.Parse(claims.TenantID)
+						identity = &Identity{
+							Subject:    claims.Subject,
+							Email:      claims.Email,
+							Role:       claims.Role,
+							TenantSlug: claims.TenantSlug,
+							TenantID:   tenantID,
+							UserID:     &userID,
+							Method:     claims.Method,
+						}
+
+						logger.Debug("authenticated via session cookie",
+							"sub", claims.Subject,
+							"email", claims.Email,
+							"tenant_slug", claims.TenantSlug,
+						)
+
+						ctx := NewContext(r.Context(), identity)
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
+					// Invalid cookie — clear it and fall through.
+					sessionMgr.ClearCookie(w)
+				}
+			}
 
 			// 1. Try Bearer token: PAT → session JWT → OIDC JWT.
 			if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") || strings.HasPrefix(authHeader, "bearer ") {

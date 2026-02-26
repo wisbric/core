@@ -128,7 +128,7 @@ func (h *LocalAdminHandler) HandleLocalLogin(w http.ResponseWriter, r *http.Requ
 	}()
 
 	// Issue session token.
-	token, err := h.sessionMgr.IssueToken(SessionClaims{
+	claims := SessionClaims{
 		Subject:    admin.Username,
 		Email:      admin.Username + "@local",
 		Role:       RoleAdmin,
@@ -136,12 +136,17 @@ func (h *LocalAdminHandler) HandleLocalLogin(w http.ResponseWriter, r *http.Requ
 		TenantID:   admin.TenantID.String(),
 		UserID:     admin.ID.String(),
 		Method:     MethodLocal,
-	})
+	}
+
+	token, err := h.sessionMgr.IssueToken(claims)
 	if err != nil {
 		h.logger.Error("local admin login: issuing token", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to issue token")
 		return
 	}
+
+	// Set session cookie (browser clients).
+	_ = h.sessionMgr.IssueCookie(w, claims)
 
 	respondJSON(w, http.StatusOK, LocalAdminLoginResponse{
 		Token:      token,
@@ -174,17 +179,23 @@ func (h *LocalAdminHandler) HandleChangePassword(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Extract current user from Bearer token.
-	authHeader := r.Header.Get("Authorization")
-	if len(authHeader) < 8 {
-		respondErr(w, http.StatusUnauthorized, "unauthorized", "no token provided")
-		return
-	}
-	token := authHeader[7:]
-	claims, err := h.sessionMgr.ValidateToken(token)
-	if err != nil {
-		respondErr(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
-		return
+	// Extract current user from session cookie or Bearer token.
+	var claims *SessionClaims
+	if c, err := h.sessionMgr.ValidateCookie(r); err == nil {
+		claims = c
+	} else {
+		authHeader := r.Header.Get("Authorization")
+		if len(authHeader) < 8 {
+			respondErr(w, http.StatusUnauthorized, "unauthorized", "no token provided")
+			return
+		}
+		token := authHeader[7:]
+		c, err := h.sessionMgr.ValidateToken(token)
+		if err != nil {
+			respondErr(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
+			return
+		}
+		claims = c
 	}
 
 	if claims.Method != MethodLocal {
@@ -228,7 +239,7 @@ func (h *LocalAdminHandler) HandleChangePassword(w http.ResponseWriter, r *http.
 	}
 
 	// Issue a new session token with the updated state.
-	newToken, err := h.sessionMgr.IssueToken(SessionClaims{
+	newClaims := SessionClaims{
 		Subject:    claims.Subject,
 		Email:      claims.Email,
 		Role:       claims.Role,
@@ -236,12 +247,17 @@ func (h *LocalAdminHandler) HandleChangePassword(w http.ResponseWriter, r *http.
 		TenantID:   claims.TenantID,
 		UserID:     claims.UserID,
 		Method:     MethodLocal,
-	})
+	}
+
+	newToken, err := h.sessionMgr.IssueToken(newClaims)
 	if err != nil {
 		h.logger.Error("change password: issuing new token", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to issue new token")
 		return
 	}
+
+	// Set session cookie (browser clients).
+	_ = h.sessionMgr.IssueCookie(w, newClaims)
 
 	respondJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",

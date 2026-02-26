@@ -88,7 +88,7 @@ func (h *LoginHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue session token.
-	token, err := h.sessionMgr.IssueToken(SessionClaims{
+	claims := SessionClaims{
 		Subject:    userRow.DisplayName,
 		Email:      userRow.Email,
 		Role:       userRow.Role,
@@ -96,12 +96,17 @@ func (h *LoginHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		TenantID:   tenantID,
 		UserID:     userRow.ID.String(),
 		Method:     "local",
-	})
+	}
+
+	token, err := h.sessionMgr.IssueToken(claims)
 	if err != nil {
 		h.logger.Error("login: issuing token", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to issue token")
 		return
 	}
+
+	// Set session cookie (browser clients).
+	_ = h.sessionMgr.IssueCookie(w, claims)
 
 	respondJSON(w, http.StatusOK, LoginResponse{
 		Token: token,
@@ -123,19 +128,26 @@ func (h *LoginHandler) HandleAuthConfig(w http.ResponseWriter, _ *http.Request) 
 	})
 }
 
-// HandleMe returns the current user's info from a session token.
+// HandleMe returns the current user's info from a session cookie or Bearer token.
 func (h *LoginHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if len(authHeader) < 8 {
-		respondErr(w, http.StatusUnauthorized, "unauthorized", "no token provided")
-		return
-	}
+	// Try session cookie first, then Bearer token.
+	var claims *SessionClaims
+	if c, err := h.sessionMgr.ValidateCookie(r); err == nil {
+		claims = c
+	} else {
+		authHeader := r.Header.Get("Authorization")
+		if len(authHeader) < 8 {
+			respondErr(w, http.StatusUnauthorized, "unauthorized", "no token provided")
+			return
+		}
 
-	token := authHeader[7:] // strip "Bearer "
-	claims, err := h.sessionMgr.ValidateToken(token)
-	if err != nil {
-		respondErr(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
-		return
+		token := authHeader[7:] // strip "Bearer "
+		c, err := h.sessionMgr.ValidateToken(token)
+		if err != nil {
+			respondErr(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
+			return
+		}
+		claims = c
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -147,8 +159,9 @@ func (h *LoginHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleLogout is a no-op endpoint for future server-side session revocation.
+// HandleLogout clears the session cookie and returns success.
 func (h *LoginHandler) HandleLogout(w http.ResponseWriter, _ *http.Request) {
+	h.sessionMgr.ClearCookie(w)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
