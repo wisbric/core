@@ -12,10 +12,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
-
-	"github.com/wisbric/nightowl/internal/db"
 )
 
 // LocalAdminLoginRequest is the JSON body for POST /auth/local.
@@ -51,16 +48,16 @@ type localAdminRow struct {
 // LocalAdminHandler handles local admin authentication endpoints.
 type LocalAdminHandler struct {
 	sessionMgr  *SessionManager
-	pool        *pgxpool.Pool
+	store       Storage
 	logger      *slog.Logger
 	rateLimiter *RateLimiter
 }
 
 // NewLocalAdminHandler creates a new local admin handler.
-func NewLocalAdminHandler(sm *SessionManager, pool *pgxpool.Pool, logger *slog.Logger, rl *RateLimiter) *LocalAdminHandler {
+func NewLocalAdminHandler(sm *SessionManager, store Storage, logger *slog.Logger, rl *RateLimiter) *LocalAdminHandler {
 	return &LocalAdminHandler{
 		sessionMgr:  sm,
-		pool:        pool,
+		store:       store,
 		logger:      logger,
 		rateLimiter: rl,
 	}
@@ -127,8 +124,7 @@ func (h *LocalAdminHandler) HandleLocalLogin(w http.ResponseWriter, r *http.Requ
 
 	// Update last_login_at.
 	go func() {
-		_, _ = h.pool.Exec(context.Background(),
-			"UPDATE public.local_admins SET last_login_at = now() WHERE id = $1", admin.ID)
+		_ = h.store.UpdateLocalAdminLastLogin(context.Background(), admin.ID)
 	}()
 
 	// Issue session token.
@@ -203,10 +199,7 @@ func (h *LocalAdminHandler) HandleChangePassword(w http.ResponseWriter, r *http.
 	}
 
 	// Fetch the admin to verify current password.
-	var currentHash string
-	err = h.pool.QueryRow(r.Context(),
-		"SELECT password_hash FROM public.local_admins WHERE id = $1", adminID,
-	).Scan(&currentHash)
+	currentHash, err := h.store.GetLocalAdminPasswordHash(r.Context(), adminID)
 	if err != nil {
 		h.logger.Error("change password: admin lookup", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to look up admin")
@@ -227,10 +220,7 @@ func (h *LocalAdminHandler) HandleChangePassword(w http.ResponseWriter, r *http.
 	}
 
 	// Update password and clear must_change.
-	_, err = h.pool.Exec(r.Context(),
-		"UPDATE public.local_admins SET password_hash = $1, must_change = false, updated_at = now() WHERE id = $2",
-		string(newHash), adminID,
-	)
+	err = h.store.UpdateLocalAdminPassword(r.Context(), adminID, string(newHash), false)
 	if err != nil {
 		h.logger.Error("change password: update", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to update password")
@@ -280,71 +270,16 @@ func (h *LocalAdminHandler) HandleAuthConfig(w http.ResponseWriter, r *http.Requ
 
 // checkOIDCEnabled checks if OIDC is configured and enabled for a tenant.
 func (h *LocalAdminHandler) checkOIDCEnabled(ctx context.Context, tenantSlug string) bool {
-	q := db.New(h.pool)
-	t, err := q.GetTenantBySlug(ctx, tenantSlug)
+	config, err := h.store.GetOIDCConfig(ctx, tenantSlug)
 	if err != nil {
 		return false
 	}
-
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return false
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return false
-	}
-
-	var enabled bool
-	err = conn.QueryRow(ctx, "SELECT enabled FROM oidc_config LIMIT 1").Scan(&enabled)
-	if err != nil {
-		return false
-	}
-	return enabled
+	return config.Enabled
 }
 
 // findLocalAdmin looks up a local admin by username across tenants or in a specific tenant.
-func (h *LocalAdminHandler) findLocalAdmin(ctx context.Context, username, tenantSlug string) (*localAdminRow, string, error) {
-	q := db.New(h.pool)
-
-	if tenantSlug != "" {
-		// Look up specific tenant.
-		t, err := q.GetTenantBySlug(ctx, tenantSlug)
-		if err != nil {
-			return nil, "", fmt.Errorf("looking up tenant %s: %w", tenantSlug, err)
-		}
-
-		var admin localAdminRow
-		err = h.pool.QueryRow(ctx,
-			"SELECT id, tenant_id, username, password_hash, must_change, last_login_at FROM public.local_admins WHERE tenant_id = $1 AND username = $2",
-			t.ID, username,
-		).Scan(&admin.ID, &admin.TenantID, &admin.Username, &admin.PasswordHash, &admin.MustChange, &admin.LastLoginAt)
-		if err != nil {
-			return nil, "", fmt.Errorf("local admin not found for tenant %s: %w", tenantSlug, err)
-		}
-		return &admin, t.Slug, nil
-	}
-
-	// Search across all tenants.
-	tenants, err := q.ListTenants(ctx)
-	if err != nil {
-		return nil, "", fmt.Errorf("listing tenants: %w", err)
-	}
-
-	for _, t := range tenants {
-		var admin localAdminRow
-		err := h.pool.QueryRow(ctx,
-			"SELECT id, tenant_id, username, password_hash, must_change, last_login_at FROM public.local_admins WHERE tenant_id = $1 AND username = $2",
-			t.ID, username,
-		).Scan(&admin.ID, &admin.TenantID, &admin.Username, &admin.PasswordHash, &admin.MustChange, &admin.LastLoginAt)
-		if err == nil {
-			return &admin, t.Slug, nil
-		}
-	}
-
-	return nil, "", fmt.Errorf("local admin not found")
+func (h *LocalAdminHandler) findLocalAdmin(ctx context.Context, username, tenantSlug string) (*LocalAdminRow, string, error) {
+	return h.store.FindLocalAdmin(ctx, username, tenantSlug)
 }
 
 // validatePassword checks password requirements: >= 12 chars, upper+lower, number or symbol.

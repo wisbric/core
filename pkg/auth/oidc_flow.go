@@ -9,11 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
-
-	"github.com/wisbric/nightowl/internal/db"
 )
 
 // OIDCFlowHandler handles the OAuth2 Authorization Code flow.
@@ -21,7 +18,7 @@ type OIDCFlowHandler struct {
 	oauth2Cfg  *oauth2.Config
 	oidcAuth   *OIDCAuthenticator
 	sessionMgr *SessionManager
-	pool       *pgxpool.Pool
+	store      Storage
 	redis      *redis.Client
 	logger     *slog.Logger
 }
@@ -31,7 +28,7 @@ func NewOIDCFlowHandler(
 	oauth2Cfg *oauth2.Config,
 	oidcAuth *OIDCAuthenticator,
 	sm *SessionManager,
-	pool *pgxpool.Pool,
+	store Storage,
 	rdb *redis.Client,
 	logger *slog.Logger,
 ) *OIDCFlowHandler {
@@ -39,7 +36,7 @@ func NewOIDCFlowHandler(
 		oauth2Cfg:  oauth2Cfg,
 		oidcAuth:   oidcAuth,
 		sessionMgr: sm,
-		pool:       pool,
+		store:      store,
 		redis:      rdb,
 		logger:     logger,
 	}
@@ -147,48 +144,8 @@ func (h *OIDCFlowHandler) HandleCallback(w http.ResponseWriter, r *http.Request)
 }
 
 // findOrCreateUser resolves an OIDC user to a database user row.
-func (h *OIDCFlowHandler) findOrCreateUser(ctx context.Context, claims *OIDCClaims) (*db.User, string, error) {
-	q := db.New(h.pool)
-
-	// Resolve tenant.
-	t, err := q.GetTenantBySlug(ctx, claims.TenantSlug)
-	if err != nil {
-		return nil, "", fmt.Errorf("looking up tenant %s: %w", claims.TenantSlug, err)
-	}
-
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return nil, "", fmt.Errorf("acquiring connection: %w", err)
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return nil, "", fmt.Errorf("setting search_path: %w", err)
-	}
-
-	tq := db.New(conn)
-
-	// Try to find existing user by external_id.
-	user, err := tq.GetUserByExternalID(ctx, claims.Subject)
-	if err == nil {
-		return &user, t.ID.String(), nil
-	}
-
-	// Create new user.
-	user, err = tq.CreateUser(ctx, db.CreateUserParams{
-		ExternalID:  claims.Subject,
-		Email:       claims.Email,
-		DisplayName: claims.Email, // Default to email; can be updated later.
-		Timezone:    "UTC",
-		Role:        claims.Role,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("creating user: %w", err)
-	}
-
-	h.logger.Info("oidc: created new user", "user_id", user.ID, "email", claims.Email, "tenant", claims.TenantSlug)
-	return &user, t.ID.String(), nil
+func (h *OIDCFlowHandler) findOrCreateUser(ctx context.Context, claims *OIDCClaims) (*UserRow, string, error) {
+	return h.store.FindOrCreateOIDCUser(ctx, claims.TenantSlug, claims.Subject, claims.Email, claims.Role)
 }
 
 func randomState() (string, error) {

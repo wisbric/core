@@ -14,11 +14,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
-
-	"github.com/wisbric/nightowl/internal/db"
 )
 
 // OIDCConfigResponse is the JSON response for GET /api/v1/admin/oidc/config.
@@ -55,15 +51,15 @@ type LocalAdminResetResponse struct {
 
 // OIDCAdminHandler handles OIDC config admin endpoints.
 type OIDCAdminHandler struct {
-	pool      *pgxpool.Pool
+	store     Storage
 	logger    *slog.Logger
 	secretKey string
 }
 
 // NewOIDCAdminHandler creates a new OIDC admin handler.
-func NewOIDCAdminHandler(pool *pgxpool.Pool, logger *slog.Logger, secretKey string) *OIDCAdminHandler {
+func NewOIDCAdminHandler(store Storage, logger *slog.Logger, secretKey string) *OIDCAdminHandler {
 	return &OIDCAdminHandler{
-		pool:      pool,
+		store:     store,
 		logger:    logger,
 		secretKey: secretKey,
 	}
@@ -115,7 +111,7 @@ func (h *OIDCAdminHandler) HandleUpdateOIDCConfig(w http.ResponseWriter, r *http
 	}
 
 	// Upsert the config.
-	err = h.upsertOIDCConfig(r.Context(), id.TenantSlug, req.IssuerURL, req.ClientID, encryptedSecret, req.Enabled)
+	err = h.store.UpsertOIDCConfig(r.Context(), id.TenantSlug, req.IssuerURL, req.ClientID, encryptedSecret, req.Enabled)
 	if err != nil {
 		h.logger.Error("saving OIDC config", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to save OIDC config")
@@ -155,7 +151,7 @@ func (h *OIDCAdminHandler) HandleTestOIDCConnection(w http.ResponseWriter, r *ht
 
 	// Update tested_at.
 	now := time.Now().UTC()
-	_ = h.updateTestedAt(r.Context(), id.TenantSlug, now)
+	_ = h.store.UpdateOIDCTestedAt(r.Context(), id.TenantSlug, now)
 
 	respondJSON(w, http.StatusOK, OIDCTestResponse{
 		OK:       true,
@@ -187,10 +183,7 @@ func (h *OIDCAdminHandler) HandleResetLocalAdmin(w http.ResponseWriter, r *http.
 		return
 	}
 
-	_, err = h.pool.Exec(r.Context(),
-		"UPDATE public.local_admins SET password_hash = $1, must_change = true, updated_at = now() WHERE tenant_id = $2",
-		hash, id.TenantID,
-	)
+	err = h.store.ResetLocalAdminPassword(r.Context(), id.TenantID, hash)
 	if err != nil {
 		h.logger.Error("resetting local admin password", "error", err)
 		respondErr(w, http.StatusInternalServerError, "internal", "failed to reset password")
@@ -205,130 +198,39 @@ func (h *OIDCAdminHandler) HandleResetLocalAdmin(w http.ResponseWriter, r *http.
 
 // getOIDCConfig retrieves the OIDC config for a tenant (with masked secret).
 func (h *OIDCAdminHandler) getOIDCConfig(ctx context.Context, tenantSlug string) (*OIDCConfigResponse, error) {
-	q := db.New(h.pool)
-	t, err := q.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		return nil, fmt.Errorf("looking up tenant: %w", err)
-	}
-
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquiring connection: %w", err)
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return nil, fmt.Errorf("setting search_path: %w", err)
-	}
-
-	var row OIDCConfigResponse
-	var testedAt *time.Time
-	err = conn.QueryRow(ctx,
-		"SELECT id, issuer_url, client_id, enabled, tested_at FROM oidc_config LIMIT 1",
-	).Scan(&row.ID, &row.IssuerURL, &row.ClientID, &row.Enabled, &testedAt)
+	row, err := h.store.GetOIDCConfig(ctx, tenantSlug)
 	if err != nil {
 		return nil, fmt.Errorf("querying oidc_config: %w", err)
 	}
 
-	row.ClientSecret = "••••••••••••••••"
-	if testedAt != nil {
-		formatted := testedAt.Format(time.RFC3339)
-		row.TestedAt = &formatted
+	response := OIDCConfigResponse{
+		ID:           row.ID.String(),
+		IssuerURL:    row.IssuerURL,
+		ClientID:     row.ClientID,
+		ClientSecret: "••••••••••••••••",
+		Enabled:      row.Enabled,
 	}
 
-	return &row, nil
+	if row.TestedAt != nil {
+		formatted := row.TestedAt.Format(time.RFC3339)
+		response.TestedAt = &formatted
+	}
+
+	return &response, nil
 }
 
 // getOIDCConfigDecrypted retrieves the OIDC config with decrypted secret.
 func (h *OIDCAdminHandler) getOIDCConfigDecrypted(ctx context.Context, tenantSlug string) (issuerURL, clientID string, err error) {
-	q := db.New(h.pool)
-	t, err := q.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		return "", "", fmt.Errorf("looking up tenant: %w", err)
-	}
-
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("acquiring connection: %w", err)
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return "", "", fmt.Errorf("setting search_path: %w", err)
-	}
-
-	err = conn.QueryRow(ctx,
-		"SELECT issuer_url, client_id FROM oidc_config WHERE enabled = true LIMIT 1",
-	).Scan(&issuerURL, &clientID)
+	row, err := h.store.GetOIDCConfig(ctx, tenantSlug)
 	if err != nil {
 		return "", "", fmt.Errorf("querying oidc_config: %w", err)
 	}
 
-	return issuerURL, clientID, nil
-}
-
-// upsertOIDCConfig inserts or updates the OIDC config for a tenant.
-func (h *OIDCAdminHandler) upsertOIDCConfig(ctx context.Context, tenantSlug, issuerURL, clientID, encryptedSecret string, enabled bool) error {
-	q := db.New(h.pool)
-	t, err := q.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		return fmt.Errorf("looking up tenant: %w", err)
+	if !row.Enabled {
+		return "", "", fmt.Errorf("oidc is disabled for tenant")
 	}
 
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquiring connection: %w", err)
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return fmt.Errorf("setting search_path: %w", err)
-	}
-
-	// Check if config exists.
-	var existingID uuid.UUID
-	err = conn.QueryRow(ctx, "SELECT id FROM oidc_config LIMIT 1").Scan(&existingID)
-	if err != nil {
-		// Insert new.
-		_, err = conn.Exec(ctx,
-			"INSERT INTO oidc_config (issuer_url, client_id, client_secret, enabled) VALUES ($1, $2, $3, $4)",
-			issuerURL, clientID, encryptedSecret, enabled,
-		)
-	} else {
-		// Update existing.
-		_, err = conn.Exec(ctx,
-			"UPDATE oidc_config SET issuer_url = $1, client_id = $2, client_secret = $3, enabled = $4, updated_at = now() WHERE id = $5",
-			issuerURL, clientID, encryptedSecret, enabled, existingID,
-		)
-	}
-
-	return err
-}
-
-// updateTestedAt updates the tested_at timestamp.
-func (h *OIDCAdminHandler) updateTestedAt(ctx context.Context, tenantSlug string, testedAt time.Time) error {
-	q := db.New(h.pool)
-	t, err := q.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		return err
-	}
-
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-
-	schema := fmt.Sprintf("tenant_%s", t.Slug)
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
-		return err
-	}
-
-	_, err = conn.Exec(ctx, "UPDATE oidc_config SET tested_at = $1", testedAt)
-	return err
+	return row.IssuerURL, row.ClientID, nil
 }
 
 // encryptAES256GCM encrypts plaintext using AES-256-GCM with the given key.

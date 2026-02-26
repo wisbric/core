@@ -6,13 +6,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/wisbric/nightowl/internal/db"
 )
 
 // APIKeyAuthenticator validates API keys against the database.
 type APIKeyAuthenticator struct {
-	DB db.DBTX
+	Store Storage
 }
 
 // APIKeyResult holds the resolved identity data from an API key lookup.
@@ -22,6 +20,7 @@ type APIKeyResult struct {
 	KeyPrefix string
 	Role      string
 	Scopes    []string
+	ExpiresAt *time.Time
 }
 
 // Authenticate hashes the raw key, looks it up in public.api_keys, and
@@ -33,20 +32,19 @@ func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (
 
 	hash := HashAPIKey(rawKey)
 
-	q := db.New(a.DB)
-	key, err := q.GetAPIKeyByHash(ctx, hash)
+	key, err := a.Store.GetAPIKeyByHash(ctx, hash)
 	if err != nil {
 		return nil, fmt.Errorf("looking up API key: %w", err)
 	}
 
 	// Check expiration.
-	if key.ExpiresAt.Valid && key.ExpiresAt.Time.Before(time.Now()) {
-		return nil, fmt.Errorf("API key expired at %s", key.ExpiresAt.Time)
+	if key.ExpiresAt != nil && key.ExpiresAt.Before(time.Now()) {
+		return nil, fmt.Errorf("API key expired at %s", key.ExpiresAt)
 	}
 
 	// Update last_used asynchronously — fire and forget.
 	go func() {
-		_ = q.UpdateAPIKeyLastUsed(context.Background(), key.ID)
+		_ = a.Store.UpdateAPIKeyLastUsed(context.Background(), key.APIKeyID)
 	}()
 
 	role := key.Role
@@ -55,10 +53,11 @@ func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (
 	}
 
 	return &APIKeyResult{
-		APIKeyID:  key.ID,
+		APIKeyID:  key.APIKeyID,
 		TenantID:  key.TenantID,
 		KeyPrefix: key.KeyPrefix,
 		Role:      role,
 		Scopes:    key.Scopes,
+		ExpiresAt: key.ExpiresAt,
 	}, nil
 }

@@ -8,8 +8,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-
-	"github.com/wisbric/nightowl/internal/db"
 )
 
 // MethodSession indicates authentication via self-issued session JWT.
@@ -25,8 +23,8 @@ const MethodSession = "session"
 //  3. X-Tenant-Slug: <slug>       →  Development-only fallback (no real auth)
 //
 // If none succeed, the request is rejected with 401.
-func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth *PATAuthenticator, pool db.DBTX, logger *slog.Logger) func(http.Handler) http.Handler {
-	apikeyAuth := &APIKeyAuthenticator{DB: pool}
+func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth *PATAuthenticator, store Storage, logger *slog.Logger) func(http.Handler) http.Handler {
+	apikeyAuth := &APIKeyAuthenticator{Store: store}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,8 +127,7 @@ func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth
 					}
 
 					// Look up tenant slug from tenant ID.
-					q := db.New(pool)
-					t, err := q.GetTenant(r.Context(), result.TenantID)
+					t, err := store.GetTenant(r.Context(), result.TenantID)
 					if err != nil {
 						logger.Error("tenant lookup for API key failed", "tenant_id", result.TenantID, "error", err)
 						respondErr(w, http.StatusUnauthorized, "unauthorized", "tenant not found")
@@ -170,20 +167,14 @@ func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth
 
 					// Try to resolve a real admin user so user-scoped
 					// operations (e.g. PAT management) work in dev mode.
-					if pool != nil {
-						q := db.New(pool)
-						if t, err := q.GetTenantBySlug(r.Context(), slug); err == nil {
-							identity.TenantID = t.ID
-							schema := fmt.Sprintf("tenant_%s", slug)
-							var userID uuid.UUID
-							var email, displayName string
-							err := pool.QueryRow(r.Context(),
-								fmt.Sprintf("SELECT id, email, display_name FROM %s.users WHERE role = 'admin' AND is_active = true LIMIT 1", schema),
-							).Scan(&userID, &email, &displayName)
-							if err == nil {
-								identity.UserID = &userID
-								identity.Email = email
-								identity.Subject = displayName
+					if store != nil {
+						userID, email, displayName, err := store.GetDevAdminUser(r.Context(), slug)
+						if err == nil {
+							identity.UserID = &userID
+							identity.Email = email
+							identity.Subject = displayName
+							if t, err := store.GetTenantBySlug(r.Context(), slug); err == nil {
+								identity.TenantID = t.ID
 							}
 						}
 					}
