@@ -56,6 +56,20 @@ type Config struct {
 	// Zammad (for readyz check — per-tenant URL is in the DB, this is the primary instance)
 	ZammadURL string `env:"TICKETOWL_ZAMMAD_URL"`
 
+	// NightOwl Additions
+	MetricsPath        string `env:"METRICS_PATH" envDefault:"/metrics"`
+	OIDCClientSecret   string `env:"OIDC_CLIENT_SECRET"`
+	OIDCRedirectURL    string `env:"OIDC_REDIRECT_URL" envDefault:"http://localhost:5173/auth/callback"`
+	SessionSecret      string `env:"NIGHTOWL_SESSION_SECRET"`
+	SessionMaxAge      string `env:"NIGHTOWL_SESSION_MAX_AGE" envDefault:"24h"`
+	SlackBotToken      string `env:"SLACK_BOT_TOKEN"`
+	SlackSigningSecret string `env:"SLACK_SIGNING_SECRET"`
+	SlackAlertChannel  string `env:"SLACK_ALERT_CHANNEL"`
+	MattermostURL              string `env:"MATTERMOST_URL"`
+	MattermostBotToken         string `env:"MATTERMOST_BOT_TOKEN"`
+	MattermostWebhookSecret    string `env:"MATTERMOST_WEBHOOK_SECRET"`
+	MattermostDefaultChannelID string `env:"MATTERMOST_DEFAULT_CHANNEL_ID"`
+
 	// Dev mode
 	DevMode bool `env:"TICKETOWL_DEV_MODE" envDefault:"false"`
 }
