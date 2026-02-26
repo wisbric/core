@@ -108,7 +108,14 @@ func Middleware(sessionMgr *SessionManager, oidcAuth *OIDCAuthenticator, patAuth
 						Method:     MethodOIDC,
 					}
 
-					logger.Debug("authenticated via OIDC",
+					if claims.OrgID != "" {
+				orgID, err := uuid.Parse(claims.OrgID)
+				if err == nil {
+					identity.OrgID = &orgID
+				}
+			}
+
+			logger.Debug("authenticated via OIDC",
 						"sub", claims.Subject,
 						"email", claims.Email,
 						"tenant_slug", claims.TenantSlug,

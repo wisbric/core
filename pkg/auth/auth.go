@@ -37,6 +37,7 @@ type Identity struct {
 	UserID     *uuid.UUID // Non-nil for OIDC-authenticated users
 	APIKeyID   *uuid.UUID // Non-nil for API key authentication
 	Method     string     // One of the Method* constants
+	OrgID      *uuid.UUID // Non-nil for users with an OrgID (e.g. ticketowl)
 }
 
 type ctxKey string
