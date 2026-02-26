@@ -31,6 +31,7 @@ const (
 type Identity struct {
 	Subject    string     // OIDC sub or "apikey:<prefix>"
 	Email      string     // User email (empty for API keys)
+	Name       string     // User display name
 	Role       string     // One of the Role* constants
 	TenantSlug string     // Resolved tenant slug
 	TenantID   uuid.UUID  // Resolved tenant ID
@@ -38,6 +39,7 @@ type Identity struct {
 	APIKeyID   *uuid.UUID // Non-nil for API key authentication
 	Method     string     // One of the Method* constants
 	OrgID      *uuid.UUID // Non-nil for users with an OrgID (e.g. ticketowl)
+	Groups     []string   // OIDC groups for mapping
 }
 
 type ctxKey string
