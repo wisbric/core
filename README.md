@@ -5,7 +5,8 @@ Shared Go libraries used by NightOwl, BookOwl, and TicketOwl.
 ## What’s Inside
 
 - `pkg/auth` — authentication (session cookies, OIDC JWT, PATs, API keys) and RBAC helpers
-- `pkg/config` — shared config parsing (env tags + defaults)
+- `pkg/authadapter` — shared auth adapter base types for implementing `auth.Storage` in each service
+- `pkg/config` — shared config parsing (env tags + defaults via `BaseConfig`)
 - `pkg/httpserver` — common HTTP middleware, health/ready endpoints, metrics
 - `pkg/platform` — Postgres/Redis helpers and migrations
 - `pkg/tenant` — multi-tenant context + search_path handling
